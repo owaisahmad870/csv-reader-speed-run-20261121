@@ -24,49 +24,48 @@ export function run(input) {
   // Cached "next LF / next CR at or after some earlier point"; valid while pos only moves forward.
   let nextLF = -1;
   let nextCR = -1;
+  let nextComma = -1;
+  let nextQuote = -1;
 
   // Unquoted characters from pos onto `prefix`, up to a comma or line break; a CR without LF is dropped (stray_cr).
   function unquoted(prefix) {
     let start = pos;
     let val = prefix;
     kept = 0;
-    while (pos < n) {
-      const c = text.charCodeAt(pos);
-      if (c === 44) {
-        kept += pos - start;
-        val += text.slice(start, pos);
-        pos += 1;
+    for (;;) {
+      if (nextComma < pos) nextComma = indexOr(text, ',', pos, n);
+      if (nextLF < pos) nextLF = indexOr(text, '\n', pos, n);
+      if (nextCR < pos) nextCR = indexOr(text, '\r', pos, n);
+      let stop = nextComma < nextLF ? nextComma : nextLF;
+      if (nextCR < stop) stop = nextCR;
+      kept += stop - start;
+      val += text.slice(start, stop);
+      if (stop === n) {
+        pos = n;
+        ended = END;
+        return val;
+      }
+      if (stop === nextComma) {
+        pos = stop + 1;
         ended = COMMA;
         return val;
       }
-      if (c === 10) {
-        kept += pos - start;
-        val += text.slice(start, pos);
-        pos += 1;
+      if (stop === nextLF) {
+        pos = stop + 1;
         line += 1;
         ended = BREAK;
         return val;
       }
-      if (c === 13) {
-        kept += pos - start;
-        val += text.slice(start, pos);
-        if (pos + 1 < n && text.charCodeAt(pos + 1) === 10) {
-          pos += 2;
-          line += 1;
-          ended = BREAK;
-          return val;
-        }
-        errors.push({ code: 'stray_cr', line: recLine, row: recRow });
-        pos += 1;
-        start = pos;
-        continue;
+      if (text.charCodeAt(stop + 1) === 10) {
+        pos = stop + 2;
+        line += 1;
+        ended = BREAK;
+        return val;
       }
-      pos += 1;
+      errors.push({ code: 'stray_cr', line: recLine, row: recRow });
+      pos = stop + 1;
+      start = pos;
     }
-    kept += pos - start;
-    val += text.slice(start, pos);
-    ended = END;
-    return val;
   }
 
   // A field whose opening quote is at pos.
@@ -82,6 +81,8 @@ export function run(input) {
         // Never closes: the quote is literal and what follows is read again, unquoted.
         nextLF = -1;
         nextCR = -1;
+        nextComma = -1;
+        nextQuote = -1;
         pos = open + 1;
         errors.push({ code: 'unterminated_quote', line: recLine, row: recRow });
         return unquoted('"');
@@ -156,12 +157,57 @@ export function run(input) {
 
     recLine = line;
     recRow = header && columns === null ? null : rows.length;
-    const fields = [];
-    let wasQuoted;
-    do {
-      wasQuoted = text.charCodeAt(pos) === 34;
-      fields.push(wasQuoted ? quoted() : unquoted(''));
-    } while (ended === COMMA);
+    let fields = null;
+    let wasQuoted = false;
+    for (;;) {
+      if (text.charCodeAt(pos) === 34) {
+        wasQuoted = true;
+        const v = quoted();
+        if (fields === null) fields = [v];
+        else fields.push(v);
+        if (ended !== COMMA) break;
+        continue;
+      }
+      wasQuoted = false;
+      // A clean stretch: no quote, CR or LF before `lim`; its comma-ended fields come from one native split.
+      if (nextLF < pos) nextLF = indexOr(text, '\n', pos, n);
+      if (nextCR < pos) nextCR = indexOr(text, '\r', pos, n);
+      if (nextQuote < pos) nextQuote = indexOr(text, '"', pos, n);
+      let lim = nextLF < nextCR ? nextLF : nextCR;
+      if (nextQuote < lim) lim = nextQuote;
+      const lastComma = lim > pos ? text.lastIndexOf(',', lim - 1) : -1;
+      if (lastComma >= pos) {
+        const parts = text.slice(pos, lastComma).split(',');
+        if (fields === null) fields = parts;
+        else for (let k = 0; k < parts.length; k++) fields.push(parts[k]);
+        pos = lastComma + 1;
+      }
+      // The field from pos holds no comma before lim.
+      if (lim === pos && lim === nextQuote && lim < n) continue; // a quoted field opens here
+      let v;
+      if (lim === n) {
+        v = text.slice(pos, n);
+        pos = n;
+      } else if (lim === nextLF) {
+        v = text.slice(pos, lim);
+        pos = lim + 1;
+        line += 1;
+      } else if (lim === nextCR && text.charCodeAt(lim + 1) === 10) {
+        v = text.slice(pos, lim);
+        pos = lim + 2;
+        line += 1;
+      } else {
+        // A stray CR or a literal quote inside the field: the careful reader.
+        v = unquoted('');
+        if (fields === null) fields = [v];
+        else fields.push(v);
+        if (ended !== COMMA) break;
+        continue;
+      }
+      if (fields === null) fields = [v];
+      else fields.push(v);
+      break;
+    }
 
     // Only stray CRs on the line: no record (their errors stay).
     if (fields.length === 1 && !wasQuoted && fields[0] === '') continue;
