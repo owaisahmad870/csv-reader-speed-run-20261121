@@ -171,6 +171,12 @@ function addErr(code, line, row) {
   errs += ',{"code":"' + code + '","line":' + line + ',"row":' + (row < 0 ? 'null' : row) + '}';
 }
 
+// Whether any byte of the 32-bit word v equals the byte repeated in `rep` (the zero-byte test on v ^ rep; exact).
+function hasByte(v, rep) {
+  const x = v ^ rep;
+  return ((x - 0x01010101) & ~x & 0x80808080) !== 0;
+}
+
 // record()'s results: [i, p, line, count, flags (1 last field quoted, 2 last field empty), extraStart].
 const ST = new Int32Array(6);
 
@@ -179,6 +185,8 @@ const ST = new Int32Array(6);
 // takes it whole once (no on-stack replacement and recompile of one big loop).
 function transcode(b, s, e, header) {
   let ob = out;
+  let ov = new DataView(ob.buffer, ob.byteOffset, ob.length);
+  const bv = new DataView(b.buffer, b.byteOffset, b.length);
   let p = o;
   let i = s;
   if (b[i] === 0xef && b[i + 1] === 0xbb && b[i + 2] === 0xbf && i + 3 <= e) i += 3; // U+FEFF as UTF-8
@@ -201,13 +209,16 @@ function transcode(b, s, e, header) {
     if (i >= e) break;
 
     // A record's JSON is at most 3 bytes per byte of text left (padding is checked apart).
-    if (p + 3 * (e - i) + 1024 > ob.length) ob = grow(ob, p, 3 * (e - i) + 1024);
+    if (p + 3 * (e - i) + 1024 > ob.length) {
+      ob = grow(ob, p, 3 * (e - i) + 1024);
+      ov = new DataView(ob.buffer, ob.byteOffset, ob.length);
+    }
     const recLine = line;
     const recRow = colsDone ? rowsN : -1;
     const recStart = p;
     if (colsDone && rowsN > 0) ob[p++] = CM;
     ob[p++] = LB;
-    record(b, i, e, ob, p, line, recRow, colsDone ? width : -1);
+    record(b, bv, i, e, ob, ov, p, line, recRow, colsDone ? width : -1);
     i = ST[0];
     p = ST[1];
     line = ST[2];
@@ -252,7 +263,7 @@ function transcode(b, s, e, header) {
 
 // The fields of one record from b[i] (not a blank line) into ob[p], as JSON strings joined by commas. The field at
 // index `cut` and after are long-row extras: ST[5] marks where the comma before them was written. Results in ST.
-function record(b, i, e, ob, p, line, recRow, cut) {
+function record(b, bv, i, e, ob, ov, p, line, recRow, cut) {
   const recLine = line;
   let count = 0;
   let flags = 0;
@@ -272,6 +283,16 @@ function record(b, i, e, ob, p, line, recRow, cut) {
       let ln = line;
       let closed = false;
       while (j < e) {
+        // Four bytes at a time while none of them is a backslash or a quote.
+        if (j + 4 <= e) {
+          const v = bv.getUint32(j, true);
+          if (!hasByte(v, 0x5c5c5c5c) && !hasByte(v, 0x22222222)) {
+            ov.setUint32(p, v, true);
+            p += 4;
+            j += 4;
+            continue;
+          }
+        }
         const c = b[j];
         if (c !== BS) {
           if (c === QT) rawQuote();
@@ -347,6 +368,16 @@ function record(b, i, e, ob, p, line, recRow, cut) {
     if (scanUnquoted) {
       const keptFrom = p;
       while (i < e) {
+        // Four bytes at a time while none of them is a comma, a backslash or a quote.
+        if (i + 4 <= e) {
+          const v = bv.getUint32(i, true);
+          if (!hasByte(v, 0x2c2c2c2c) && !hasByte(v, 0x5c5c5c5c) && !hasByte(v, 0x22222222)) {
+            ov.setUint32(p, v, true);
+            p += 4;
+            i += 4;
+            continue;
+          }
+        }
         const c = b[i];
         if (c > BS) {
           // Lower-case letters and the like: the common case, one test.
