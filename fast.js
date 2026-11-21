@@ -273,11 +273,12 @@ function record(b, bv, i, e, ob, ov, p, line, recRow, cut) {
     if (count === cut) extraStart = p;
     if (count > 0) ob[p++] = CM;
     ob[p++] = QT;
-    const fieldStart = p;
+    let fieldStart = p;
     let ended = 2; // 0 comma, 1 line break, 2 end of text
     let scanUnquoted = true;
     let junk = false;
     const quoted = i < e && b[i] === BS && b[i + 1] === QT;
+    let lastQuoted = quoted;
 
     if (quoted) {
       let j = i + 2;
@@ -396,6 +397,17 @@ function record(b, bv, i, e, ob, ov, p, line, recRow, cut) {
         }
         if (c === CM) {
           i++;
+          if (!junk && !(b[i] === BS && b[i + 1] === QT)) {
+            // The next field is unquoted too: close this one, open it, and keep scanning (the field loop's own steps).
+            ob[p++] = QT;
+            count++;
+            if (count === cut) extraStart = p;
+            ob[p++] = CM;
+            ob[p++] = QT;
+            fieldStart = p;
+            lastQuoted = false;
+            continue;
+          }
           ended = 0;
           break;
         }
@@ -440,7 +452,7 @@ function record(b, bv, i, e, ob, ov, p, line, recRow, cut) {
       }
       if (junk && p > keptFrom) addErr('quote_junk', recLine, recRow);
     }
-    flags = (quoted ? 1 : 0) | (p === fieldStart ? 2 : 0);
+    flags = (lastQuoted ? 1 : 0) | (p === fieldStart ? 2 : 0);
     ob[p++] = QT;
     count++;
     if (ended !== 0) break;
