@@ -89,8 +89,11 @@ export function answersFromBytes(b) {
 export function warmUp() {
   const t = '﻿h,"q"\r\na,"b""c","d\r\ne\rf\ng"x,\\u0041\r\n\n\r\n1\r2\n"j"kg,"k"\rz,3,4,5\n1\n"u,v\n';
   const t2 = 'x,"y"\n"m",n\n\n"p","q"';
+  // Texts ending in digits, spaces and letters: the last 1-3 bytes are read one at a time, past the 4-byte words.
+  const t3 = 'h1,h2\nab,1 2';
+  const t4 = 'h\n"Z9 x';
   const cases = [];
-  for (const text of [t, t2]) for (const header of [true, false]) cases.push({ id: 'w', input: { text, header } });
+  for (const text of [t, t2, t3, t4]) for (const header of [true, false]) cases.push({ id: 'w', input: { text, header } });
   // Several passes: V8 allocates a function's feedback vector only after its first few calls.
   const bytes = Buffer.from(JSON.stringify(cases));
   for (let k = 0; k < 4; k++) answersFromBytes(bytes);
