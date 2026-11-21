@@ -57,7 +57,7 @@ for (let f = 0; f < files; f++) {
   for (let i = 0; i < 200; i++) inputs.push({ text: randText(f % 5 === 4, rnd(80)), header: rnd(2) === 0 });
   file(inputs, 'random ' + f);
 }
-for (let k = 0; k < 6; k++) {
+for (let k = 0; k < Number(process.argv[4] ?? 6); k++) {
   const sd = createHash('sha256').update('fast-' + k).digest('hex');
   const inputs = [];
   for (let i = 0; i < 6; i++) inputs.push(generate(streamFor(sd, 'case', i), i));
