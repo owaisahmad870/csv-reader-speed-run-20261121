@@ -1,8 +1,8 @@
-// Fuzz: run() + toJson() against vendor csv-reader 1.0.0 (the kit's copy), compared as parsed JSON.
+// Fuzz: run() + JSON.stringify against vendor csv-reader 1.0.0 (the kit's copy), compared as parsed JSON.
 // usage: node test/fuzz.mjs <kit dir> [generatedSeeds=20]
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { run, toJson } from '../solve.js';
+import { run } from '../solve.js';
 
 const kit = process.argv[2];
 const seeds = Number(process.argv[3] ?? 20);
@@ -16,7 +16,7 @@ let failed = 0;
 function check(input, label) {
   checked++;
   const want = JSON.stringify(readCsv(input));
-  const got = JSON.stringify(JSON.parse(toJson(run(input))));
+  const got = JSON.stringify(JSON.parse(JSON.stringify(run(input))));
   if (want !== got) {
     failed++;
     if (failed <= 5) console.log('MISMATCH', label, JSON.stringify(input).slice(0, 300), '\n want', want.slice(0, 400), '\n got ', got.slice(0, 400));

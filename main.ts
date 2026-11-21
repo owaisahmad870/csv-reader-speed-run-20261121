@@ -5,7 +5,7 @@ import { setFlagsFromString } from 'node:v8';
 
 setFlagsFromString('--no-incremental-marking');
 
-const { run, toJson } = await import(new URL('./solve.js', import.meta.url).href);
+const { run } = await import(new URL('./solve.js', import.meta.url).href);
 
 const inDir = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
@@ -13,8 +13,8 @@ const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 const cases = JSON.parse(readFileSync(inDir + '/cases.json', 'utf8'));
 let out = '[';
 for (let i = 0; i < cases.length; i++) {
-  if (i > 0) out += ',';
-  out += toJson(run(cases[i].input));
+  // Serialised at once so only one case's answer is alive at a time.
+  out += (i > 0 ? ',' : '') + JSON.stringify(run(cases[i].input));
   cases[i] = null;
 }
 writeFileSync(outDir + '/answers.json', out + ']');

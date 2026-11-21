@@ -183,22 +183,6 @@ export function run(input) {
   return { columns: header ? (columns === null ? [] : columns) : null, rows, errors };
 }
 
-// Characters a JSON string must escape (and surrogates, left to JSON.stringify to get lone ones right).
-const NEEDS_ESCAPE = /["\\\u0000-\u001f\ud800-\udfff]/;
-
-/** run()'s answer as JSON text: rows written by hand when no field needs escaping, else JSON.stringify. */
-export function toJson(answer) {
-  const rows = answer.rows;
-  let s = '{"columns":' + JSON.stringify(answer.columns) + ',"rows":[';
-  for (let r = 0; r < rows.length; r++) {
-    const row = rows[r];
-    if (r > 0) s += ',';
-    // Every row has at least one field (width >= 1).
-    s += NEEDS_ESCAPE.test(row.join('')) ? JSON.stringify(row) : '["' + row.join('","') + '"]';
-  }
-  return s + '],"errors":' + JSON.stringify(answer.errors) + '}';
-}
-
 function indexOr(text, ch, from, n) {
   const k = text.indexOf(ch, from);
   return k < 0 ? n : k;
