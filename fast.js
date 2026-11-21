@@ -171,10 +171,11 @@ function addErr(code, line, row) {
   errs += ',{"code":"' + code + '","line":' + line + ',"row":' + (row < 0 ? 'null' : row) + '}';
 }
 
-// Whether any byte of the 32-bit word v equals the byte repeated in `rep` (the zero-byte test on v ^ rep; exact).
-function hasByte(v, rep) {
-  const x = v ^ rep;
-  return ((x - 0x01010101) & ~x & 0x80808080) !== 0;
+// The high bit of each zero byte of the 32-bit word x. Bytes above the first zero byte may be flagged falsely (a borrow),
+// but the lowest flag is always exact: it marks the first zero byte, and the mask is 0 only when there is none.
+// Stepping to the lowest flag of (word ^ repeated special byte) finds the first special byte of the word.
+function zeroBytes(x) {
+  return (x - 0x01010101) & ~x & 0x80808080;
 }
 
 // record()'s results: [i, p, line, count, flags (1 last field quoted, 2 last field empty), extraStart].
@@ -283,15 +284,19 @@ function record(b, bv, i, e, ob, ov, p, line, recRow, cut) {
       let ln = line;
       let closed = false;
       while (j < e) {
-        // Four bytes at a time while none of them is a backslash or a quote.
+        // Four bytes at a time: copy the word, then step to its first backslash or quote (or past it, if none).
         if (j + 4 <= e) {
           const v = bv.getUint32(j, true);
-          if (!hasByte(v, 0x5c5c5c5c) && !hasByte(v, 0x22222222)) {
-            ov.setUint32(p, v, true);
+          const m = zeroBytes(v ^ 0x5c5c5c5c) | zeroBytes(v ^ 0x22222222);
+          ov.setUint32(p, v, true);
+          if (m === 0) {
             p += 4;
             j += 4;
             continue;
           }
+          const k = (31 - Math.clz32(m & -m)) >> 3;
+          p += k;
+          j += k;
         }
         const c = b[j];
         if (c !== BS) {
@@ -368,15 +373,19 @@ function record(b, bv, i, e, ob, ov, p, line, recRow, cut) {
     if (scanUnquoted) {
       const keptFrom = p;
       while (i < e) {
-        // Four bytes at a time while none of them is a comma, a backslash or a quote.
+        // Four bytes at a time: copy the word, then step to its first comma, backslash or quote (or past it, if none).
         if (i + 4 <= e) {
           const v = bv.getUint32(i, true);
-          if (!hasByte(v, 0x2c2c2c2c) && !hasByte(v, 0x5c5c5c5c) && !hasByte(v, 0x22222222)) {
-            ov.setUint32(p, v, true);
+          const m = zeroBytes(v ^ 0x2c2c2c2c) | zeroBytes(v ^ 0x5c5c5c5c) | zeroBytes(v ^ 0x22222222);
+          ov.setUint32(p, v, true);
+          if (m === 0) {
             p += 4;
             i += 4;
             continue;
           }
+          const k = (31 - Math.clz32(m & -m)) >> 3;
+          p += k;
+          i += k;
         }
         const c = b[i];
         if (c > BS) {
