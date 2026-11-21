@@ -48,7 +48,7 @@ export function answersFromBytes(b) {
             if (k2 === 'text') {
               if (b[i] !== QT) throw new Error('text is not a string');
               ts = i + 1;
-              te = stringEnd(b, ts);
+              te = textEnd(b, ts);
               i = ws(b, te + 1);
             } else if (k2 === 'header') {
               if (b[i] === 0x74 && b[i + 1] === 0x72 && b[i + 2] === U && b[i + 3] === 0x65) header = true, (i += 4);
@@ -91,7 +91,9 @@ export function warmUp() {
   const t2 = 'x,"y"\n"m",n\n\n"p","q"';
   const cases = [];
   for (const text of [t, t2]) for (const header of [true, false]) cases.push({ id: 'w', input: { text, header } });
-  answersFromBytes(Buffer.from(JSON.stringify(cases)));
+  // Several passes: V8 allocates a function's feedback vector only after its first few calls.
+  const bytes = Buffer.from(JSON.stringify(cases));
+  for (let k = 0; k < 4; k++) answersFromBytes(bytes);
 }
 
 function ws(b, i) {
@@ -109,6 +111,15 @@ function keyAt(b, i) {
   i = ws(b, e + 1);
   if (b[i] !== 0x3a) throw new Error('colon expected');
   return [key, ws(b, i + 1)];
+}
+
+// Where a text string ends, in one native search: the raw bytes `","header":` cannot occur inside a JSON string (its
+// quotes would be escaped), so their first match after ts closes the text when header is the next key. If it is not,
+// the span runs past the real end, and the reader meets that end's raw quote and throws (rawQuote).
+const HEADER_KEY = Buffer.from('","header":');
+function textEnd(b, ts) {
+  const q = b.indexOf(HEADER_KEY, ts);
+  return q >= 0 ? q : stringEnd(b, ts);
 }
 
 function skipString(b, i) {
@@ -149,7 +160,23 @@ function checkU(b, j) {
   if (!(c >= 0) || c === 0x0a || c === 0x0d || c === 0x22 || c === 0x2c || c === 0xfeff) throw new Error('special \\u escape');
 }
 
+// A raw quote can only end a JSON string: met inside a text span, the span was guessed wrong.
+function rawQuote() {
+  throw new Error('raw quote inside text');
+}
+
+// Errors of the case being read, as JSON objects each led by a comma; rare, so a string.
+let errs = '';
+function addErr(code, line, row) {
+  errs += ',{"code":"' + code + '","line":' + line + ',"row":' + (row < 0 ? 'null' : row) + '}';
+}
+
+// record()'s results: [i, p, line, count, flags (1 last field quoted, 2 last field empty), extraStart].
+const ST = new Int32Array(6);
+
 // One case's answer, {"columns":...,"rows":[...],"errors":[...]}, for the escaped text b[s, e).
+// A small driver: the per-record work is record(), a function called per record, so the optimizing compiler
+// takes it whole once (no on-stack replacement and recompile of one big loop).
 function transcode(b, s, e, header) {
   let ob = out;
   let p = o;
@@ -157,10 +184,10 @@ function transcode(b, s, e, header) {
   if (b[i] === 0xef && b[i + 1] === 0xbb && b[i + 2] === 0xbf && i + 3 <= e) i += 3; // U+FEFF as UTF-8
   if (b[i] === BS && b[i + 1] === U && i + 6 <= e) checkU(b, i); // an escaped U+FEFF is not read here
   let line = 1;
-  let errs = '';
   let width = -1;
   let rowsN = 0;
   let colsDone = !header;
+  errs = '';
   p += ob.latin1Write(header ? '{"columns":' : '{"columns":null,"rows":[', p); // room: answersFromBytes keeps 64 KiB spare
 
   for (;;) {
@@ -176,159 +203,19 @@ function transcode(b, s, e, header) {
     // A record's JSON is at most 3 bytes per byte of text left (padding is checked apart).
     if (p + 3 * (e - i) + 1024 > ob.length) ob = grow(ob, p, 3 * (e - i) + 1024);
     const recLine = line;
-    const recRow = colsDone ? String(rowsN) : 'null';
+    const recRow = colsDone ? rowsN : -1;
     const recStart = p;
     if (colsDone && rowsN > 0) ob[p++] = CM;
     ob[p++] = LB;
-    let count = 0;
-    let lastQuoted = false;
-    let lastEmpty = false;
-    let extraStart = -1;
-
-    for (;;) {
-      if (count === width && colsDone) extraStart = p;
-      if (count > 0) ob[p++] = CM;
-      ob[p++] = QT;
-      const fieldStart = p;
-      let ended = 2; // 0 comma, 1 line break, 2 end of text
-      let scanUnquoted = true;
-      let junk = false;
-      const quoted = i < e && b[i] === BS && b[i + 1] === QT;
-
-      if (quoted) {
-        let j = i + 2;
-        let ln = line;
-        let closed = false;
-        while (j < e) {
-          const c = b[j];
-          if (c !== BS) {
-            ob[p++] = c;
-            j++;
-            continue;
-          }
-          const d = b[j + 1];
-          if (d === QT) {
-            if (b[j + 2] === BS && b[j + 3] === QT) {
-              ob[p++] = BS;
-              ob[p++] = QT;
-              j += 4;
-              continue;
-            }
-            j += 2;
-            closed = true;
-            break;
-          }
-          if (d === R) {
-            ob[p++] = BS;
-            ob[p++] = N;
-            ln++;
-            j += b[j + 2] === BS && b[j + 3] === N ? 4 : 2;
-            continue;
-          }
-          if (d === N) ln++;
-          else if (d === U) {
-            checkU(b, j);
-            ob[p++] = BS;
-            ob[p++] = U;
-            ob[p++] = b[j + 2];
-            ob[p++] = b[j + 3];
-            ob[p++] = b[j + 4];
-            ob[p++] = b[j + 5];
-            j += 6;
-            continue;
-          }
-          ob[p++] = BS;
-          ob[p++] = d;
-          j += 2;
-        }
-        if (!closed) {
-          // Never closes: the quote is literal and what follows is read again, unquoted.
-          p = fieldStart;
-          ob[p++] = BS;
-          ob[p++] = QT;
-          errs += ',{"code":"unterminated_quote","line":' + recLine + ',"row":' + recRow + '}';
-          i += 2;
-        } else {
-          line = ln;
-          i = j;
-          scanUnquoted = false;
-          if (i >= e) ended = 2;
-          else if (b[i] === CM) {
-            i++;
-            ended = 0;
-          } else if (b[i] === BS && b[i + 1] === N) {
-            i += 2;
-            line++;
-            ended = 1;
-          } else if (b[i] === BS && b[i + 1] === R && b[i + 2] === BS && b[i + 3] === N) {
-            i += 4;
-            line++;
-            ended = 1;
-          } else {
-            scanUnquoted = true;
-            junk = true;
-          }
-        }
-      }
-
-      if (scanUnquoted) {
-        const keptFrom = p;
-        while (i < e) {
-          const c = b[i];
-          if (c === CM) {
-            i++;
-            ended = 0;
-            break;
-          }
-          if (c !== BS) {
-            ob[p++] = c;
-            i++;
-            continue;
-          }
-          const d = b[i + 1];
-          if (d === N) {
-            i += 2;
-            line++;
-            ended = 1;
-            break;
-          }
-          if (d === R) {
-            if (b[i + 2] === BS && b[i + 3] === N) {
-              i += 4;
-              line++;
-              ended = 1;
-              break;
-            }
-            errs += ',{"code":"stray_cr","line":' + recLine + ',"row":' + recRow + '}';
-            i += 2;
-            continue;
-          }
-          if (d === U) {
-            checkU(b, i);
-            ob[p++] = BS;
-            ob[p++] = U;
-            ob[p++] = b[i + 2];
-            ob[p++] = b[i + 3];
-            ob[p++] = b[i + 4];
-            ob[p++] = b[i + 5];
-            i += 6;
-            continue;
-          }
-          ob[p++] = BS;
-          ob[p++] = d;
-          i += 2;
-        }
-        if (junk && p > keptFrom) errs += ',{"code":"quote_junk","line":' + recLine + ',"row":' + recRow + '}';
-      }
-      lastEmpty = p === fieldStart;
-      lastQuoted = quoted;
-      ob[p++] = QT;
-      count++;
-      if (ended !== 0) break;
-    }
+    record(b, i, e, ob, p, line, recRow, colsDone ? width : -1);
+    i = ST[0];
+    p = ST[1];
+    line = ST[2];
+    const count = ST[3];
+    const flags = ST[4];
 
     // Only stray CRs on the line: no record (their errors stay).
-    if (count === 1 && !lastQuoted && lastEmpty) {
+    if (count === 1 && flags === 2) {
       p = recStart;
       continue;
     }
@@ -348,6 +235,7 @@ function transcode(b, s, e, header) {
       }
       errs += ',{"code":"short_row","line":' + recLine + ',"row":' + recRow + ',"fields":' + count + '}';
     } else if (count > width) {
+      const extraStart = ST[5];
       const extra = ob.latin1Slice(extraStart + 1, p);
       p = extraStart;
       errs += ',{"code":"long_row","line":' + recLine + ',"row":' + recRow + ',"extra":[' + extra + ']}';
@@ -361,3 +249,167 @@ function transcode(b, s, e, header) {
   out = ob;
   o = p;
 }
+
+// The fields of one record from b[i] (not a blank line) into ob[p], as JSON strings joined by commas. The field at
+// index `cut` and after are long-row extras: ST[5] marks where the comma before them was written. Results in ST.
+function record(b, i, e, ob, p, line, recRow, cut) {
+  const recLine = line;
+  let count = 0;
+  let flags = 0;
+  let extraStart = -1;
+  for (;;) {
+    if (count === cut) extraStart = p;
+    if (count > 0) ob[p++] = CM;
+    ob[p++] = QT;
+    const fieldStart = p;
+    let ended = 2; // 0 comma, 1 line break, 2 end of text
+    let scanUnquoted = true;
+    let junk = false;
+    const quoted = i < e && b[i] === BS && b[i + 1] === QT;
+
+    if (quoted) {
+      let j = i + 2;
+      let ln = line;
+      let closed = false;
+      while (j < e) {
+        const c = b[j];
+        if (c !== BS) {
+          if (c === QT) rawQuote();
+          ob[p++] = c;
+          j++;
+          continue;
+        }
+        const d = b[j + 1];
+        if (d === QT) {
+          if (b[j + 2] === BS && b[j + 3] === QT) {
+            ob[p++] = BS;
+            ob[p++] = QT;
+            j += 4;
+            continue;
+          }
+          j += 2;
+          closed = true;
+          break;
+        }
+        if (d === R) {
+          ob[p++] = BS;
+          ob[p++] = N;
+          ln++;
+          j += b[j + 2] === BS && b[j + 3] === N ? 4 : 2;
+          continue;
+        }
+        if (d === N) ln++;
+        else if (d === U) {
+          checkU(b, j);
+          ob[p++] = BS;
+          ob[p++] = U;
+          ob[p++] = b[j + 2];
+          ob[p++] = b[j + 3];
+          ob[p++] = b[j + 4];
+          ob[p++] = b[j + 5];
+          j += 6;
+          continue;
+        }
+        ob[p++] = BS;
+        ob[p++] = d;
+        j += 2;
+      }
+      if (!closed) {
+        // Never closes: the quote is literal and what follows is read again, unquoted.
+        p = fieldStart;
+        ob[p++] = BS;
+        ob[p++] = QT;
+        addErr('unterminated_quote', recLine, recRow);
+        i += 2;
+      } else {
+        line = ln;
+        i = j;
+        scanUnquoted = false;
+        if (i >= e) ended = 2;
+        else if (b[i] === CM) {
+          i++;
+          ended = 0;
+        } else if (b[i] === BS && b[i + 1] === N) {
+          i += 2;
+          line++;
+          ended = 1;
+        } else if (b[i] === BS && b[i + 1] === R && b[i + 2] === BS && b[i + 3] === N) {
+          i += 4;
+          line++;
+          ended = 1;
+        } else {
+          scanUnquoted = true;
+          junk = true;
+        }
+      }
+    }
+
+    if (scanUnquoted) {
+      const keptFrom = p;
+      while (i < e) {
+        const c = b[i];
+        if (c > BS) {
+          // Lower-case letters and the like: the common case, one test.
+          ob[p++] = c;
+          i++;
+          continue;
+        }
+        if (c === CM) {
+          i++;
+          ended = 0;
+          break;
+        }
+        if (c !== BS) {
+          if (c === QT) rawQuote();
+          ob[p++] = c;
+          i++;
+          continue;
+        }
+        const d = b[i + 1];
+        if (d === N) {
+          i += 2;
+          line++;
+          ended = 1;
+          break;
+        }
+        if (d === R) {
+          if (b[i + 2] === BS && b[i + 3] === N) {
+            i += 4;
+            line++;
+            ended = 1;
+            break;
+          }
+          addErr('stray_cr', recLine, recRow);
+          i += 2;
+          continue;
+        }
+        if (d === U) {
+          checkU(b, i);
+          ob[p++] = BS;
+          ob[p++] = U;
+          ob[p++] = b[i + 2];
+          ob[p++] = b[i + 3];
+          ob[p++] = b[i + 4];
+          ob[p++] = b[i + 5];
+          i += 6;
+          continue;
+        }
+        ob[p++] = BS;
+        ob[p++] = d;
+        i += 2;
+      }
+      if (junk && p > keptFrom) addErr('quote_junk', recLine, recRow);
+    }
+    flags = (quoted ? 1 : 0) | (p === fieldStart ? 2 : 0);
+    ob[p++] = QT;
+    count++;
+    if (ended !== 0) break;
+  }
+  ST[0] = i;
+  ST[1] = p;
+  ST[2] = line;
+  ST[3] = count;
+  ST[4] = flags;
+  ST[5] = extraStart;
+}
+

@@ -19,6 +19,8 @@ const files = {
   // \u002c (a comma) and \u000a written as escapes: refused by the byte path and by latin1 mode, so plain UTF-8.
   // \u00e9 written as an escape: fine in the byte path; latin1 mode must refuse it.
   latinEscape: JSON.stringify(inputs.map((input, i) => ({ id: 'c' + i, input, note: 1 }))).replaceAll('é', BS + 'u00e9'),
+  // Header before text in the first case only: the text-end guess runs into the next case and must be caught.
+  mixedOrder: `[{"id":"c0","input":{"header":${inputs[0].header},"text":${JSON.stringify(inputs[0].text)}}},` + JSON.stringify({ id: 'c1', input: inputs[1] }) + ']',
   // Whitespace between tokens, keys reordered.
   spaced: '[ ' + inputs.map((input, i) => `{ "input" : { "header" : ${input.header} , "text" : ${JSON.stringify(input.text)} } , "id" : "c${i}" }`).join(' ,\n') + ' ]',
 };
